@@ -13,18 +13,27 @@ export async function POST(request) {
       interests,
     } = await request.json();
 
-    if (!destination || !days) {
+    const numberOfDays = Number(days);
+
+    if (
+      !destination ||
+      !Number.isInteger(numberOfDays) ||
+      numberOfDays < 1 ||
+      numberOfDays > 14
+    ) {
       return NextResponse.json(
-        { error: "Please enter a destination and trip duration." },
+        { error: "Please enter a destination and a trip duration between 1 and 14 days." },
         { status: 400 }
       );
     }
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
+    const apiKey = process.env.GROQ_API_KEY;
+    const model =
+      process.env.GROQ_MODEL || "openai/gpt-oss-20b";
 
     if (!apiKey) {
       return NextResponse.json(
-        { error: "OpenRouter API key is missing. Check your Vercel environment variables." },
+        { error: "Groq API key is missing. Check your environment variables." },
         { status: 500 }
       );
     }
@@ -33,7 +42,7 @@ export async function POST(request) {
 Create a practical travel itinerary in JSON format.
 
 Destination: ${destination}
-Duration: ${days} days
+Duration: ${numberOfDays} days
 Budget: ${budget || "Not specified"}
 Travelers: ${travelers || "Not specified"}
 Trip purpose: ${purpose || "Leisure"}
@@ -59,22 +68,23 @@ Return only valid JSON in this exact structure:
   "tips": ["Travel tip 1", "Travel tip 2"]
 }
 
-Include realistic activities, logical travel order, local food,
-and useful practical tips. Return exactly ${days} days.
-Do not invent precise opening hours or prices.
+Requirements:
+- Return exactly ${numberOfDays} days, numbered from 1 to ${numberOfDays}.
+- Include several useful activities per day.
+- Organize activities in a logical travel order.
+- Include local food and practical travel tips.
+- Respect the stated budget, traveler count, purpose, and interests.
+- Do not invent precise opening hours or prices.
+- Return JSON only, without Markdown fences.
 `;
 
-    const model = process.env.OPENROUTER_MODEL || "openrouter/free";
-
     const response = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
+      "https://api.groq.com/openai/v1/chat/completions",
       {
         method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": "https://bonvoya.vercel.app",
-          "X-Title": "Bonvoya",
         },
         body: JSON.stringify({
           model,
@@ -82,7 +92,7 @@ Do not invent precise opening hours or prices.
             {
               role: "system",
               content:
-                "You are Bonvoya's travel itinerary planner. Return only valid JSON, without markdown fences or explanatory text. Follow the exact JSON structure requested by the user.",
+                "You are Bonvoya's travel itinerary planner. Return only valid JSON matching the exact requested schema. Do not include Markdown fences or explanatory text outside the JSON.",
             },
             {
               role: "user",
@@ -92,35 +102,39 @@ Do not invent precise opening hours or prices.
           temperature: 0.2,
           max_tokens: 4000,
         }),
-        signal: AbortSignal.timeout(60000),
+        signal: AbortSignal.timeout(45000),
       }
     );
 
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      console.error("OpenRouter API error:", response.status, data);
+      console.error(
+        "Groq itinerary API error:",
+        response.status,
+        data?.error?.message || "Unknown error"
+      );
 
       return NextResponse.json(
         {
           error:
-            data?.error?.message ||
-            "The AI could not generate your itinerary. Please try again.",
+            response.status === 429
+              ? "The AI service is temporarily rate-limited. Please try again shortly."
+              : "The AI could not generate your itinerary. Please try again.",
         },
-        { status: 502 }
+        { status: response.status === 429 ? 429 : 502 }
       );
     }
 
     const generatedText = data?.choices?.[0]?.message?.content;
 
-    if (!generatedText || typeof generatedText !== "string") {
+    if (typeof generatedText !== "string" || !generatedText.trim()) {
       return NextResponse.json(
         { error: "The AI returned an empty response. Please try again." },
         { status: 502 }
       );
     }
 
-    // Handle responses that contain JSON inside markdown fences.
     const cleanedText = generatedText
       .trim()
       .replace(/^```(?:json)?\s*/i, "")
@@ -144,7 +158,7 @@ Do not invent precise opening hours or prices.
       !itinerary.introduction ||
       !Array.isArray(itinerary.days) ||
       !Array.isArray(itinerary.tips) ||
-      itinerary.days.length !== Number(days)
+      itinerary.days.length !== numberOfDays
     ) {
       return NextResponse.json(
         { error: "The AI returned an incomplete itinerary. Please try again." },
@@ -156,14 +170,16 @@ Do not invent precise opening hours or prices.
   } catch (error) {
     console.error("Itinerary generation error:", error);
 
+    const timedOut =
+      error instanceof Error && error.name === "TimeoutError";
+
     return NextResponse.json(
       {
-        error:
-          error?.name === "TimeoutError"
-            ? "Itinerary generation took too long. Please try again."
-            : "Something went wrong while creating your itinerary.",
+        error: timedOut
+          ? "Itinerary generation took too long. Please try again."
+          : "Something went wrong while creating your itinerary.",
       },
-      { status: 500 }
+      { status: timedOut ? 504 : 500 }
     );
   }
 }
