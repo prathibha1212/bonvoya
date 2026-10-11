@@ -1,5 +1,6 @@
-
 import { NextResponse } from "next/server";
+
+export const runtime = "nodejs";
 
 export async function POST(request) {
   try {
@@ -19,11 +20,11 @@ export async function POST(request) {
       );
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.OPENROUTER_API_KEY;
 
     if (!apiKey) {
       return NextResponse.json(
-        { error: "Gemini API key is missing. Check your .env.local file." },
+        { error: "OpenRouter API key is missing. Check your Vercel environment variables." },
         { status: 500 }
       );
     }
@@ -63,52 +64,90 @@ and useful practical tips. Return exactly ${days} days.
 Do not invent precise opening hours or prices.
 `;
 
+    const model = process.env.OPENROUTER_MODEL || "openrouter/free";
+
     const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
+      "https://openrouter.ai/api/v1/chat/completions",
       {
         method: "POST",
         headers: {
+          Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
-          "x-goog-api-key": apiKey,
+          "HTTP-Referer": "https://bonvoya.vercel.app",
+          "X-Title": "Bonvoya",
         },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            responseMimeType: "application/json",
-          },
+          model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are Bonvoya's travel itinerary planner. Return only valid JSON, without markdown fences or explanatory text. Follow the exact JSON structure requested by the user.",
+            },
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+          temperature: 0.2,
+          max_tokens: 4000,
         }),
+        signal: AbortSignal.timeout(60000),
       }
     );
 
+    const data = await response.json().catch(() => ({}));
+
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      console.error("Gemini API error:", errorData);
+      console.error("OpenRouter API error:", response.status, data);
 
       return NextResponse.json(
-        { error: "The AI could not generate your itinerary. Please try again." },
+        {
+          error:
+            data?.error?.message ||
+            "The AI could not generate your itinerary. Please try again.",
+        },
         { status: 502 }
       );
     }
 
-    const data = await response.json();
-    const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const generatedText = data?.choices?.[0]?.message?.content;
 
-    if (!generatedText) {
+    if (!generatedText || typeof generatedText !== "string") {
       return NextResponse.json(
         { error: "The AI returned an empty response. Please try again." },
         { status: 502 }
       );
     }
 
-    const itinerary = JSON.parse(generatedText);
+    // Handle responses that contain JSON inside markdown fences.
+    const cleanedText = generatedText
+      .trim()
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/, "");
+
+    let itinerary;
+
+    try {
+      itinerary = JSON.parse(cleanedText);
+    } catch {
+      console.error("Invalid itinerary JSON:", generatedText);
+
+      return NextResponse.json(
+        { error: "The AI returned an invalid itinerary. Please try again." },
+        { status: 502 }
+      );
+    }
 
     if (
       !itinerary.title ||
       !itinerary.introduction ||
-      !Array.isArray(itinerary.days)
+      !Array.isArray(itinerary.days) ||
+      !Array.isArray(itinerary.tips) ||
+      itinerary.days.length !== Number(days)
     ) {
       return NextResponse.json(
-        { error: "The AI returned an invalid itinerary. Please try again." },
+        { error: "The AI returned an incomplete itinerary. Please try again." },
         { status: 502 }
       );
     }
@@ -118,7 +157,12 @@ Do not invent precise opening hours or prices.
     console.error("Itinerary generation error:", error);
 
     return NextResponse.json(
-      { error: "Something went wrong while creating your itinerary." },
+      {
+        error:
+          error?.name === "TimeoutError"
+            ? "Itinerary generation took too long. Please try again."
+            : "Something went wrong while creating your itinerary.",
+      },
       { status: 500 }
     );
   }
