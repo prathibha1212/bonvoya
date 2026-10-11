@@ -1,81 +1,195 @@
 import { NextResponse } from "next/server";
 
-export const runtime = "nodejs";
-
 export async function POST(request) {
   try {
     const {
+      origin,
       destination,
       days,
       budget,
       travelers,
+      travelParty,
+      travelDate,
+      currency,
       purpose,
       interests,
+      preferences,
     } = await request.json();
 
+    // Validate required fields
+    if (!destination || !days || !budget) {
+      return NextResponse.json(
+        {
+          error: "Please provide a destination, trip duration, and budget.",
+        },
+        { status: 400 }
+      );
+    }
+
     const numberOfDays = Number(days);
+    const numberOfTravelers = Number(travelers) || 1;
+    const totalBudget = Number(budget);
 
     if (
-      !destination ||
       !Number.isInteger(numberOfDays) ||
       numberOfDays < 1 ||
       numberOfDays > 14
     ) {
       return NextResponse.json(
-        { error: "Please enter a destination and a trip duration between 1 and 14 days." },
+        { error: "Trip duration must be between 1 and 14 days." },
+        { status: 400 }
+      );
+    }
+
+    if (!Number.isFinite(totalBudget) || totalBudget <= 0) {
+      return NextResponse.json(
+        { error: "Please provide a valid travel budget." },
         { status: 400 }
       );
     }
 
     const apiKey = process.env.GROQ_API_KEY;
-    const model =
-      process.env.GROQ_MODEL || "openai/gpt-oss-20b";
 
     if (!apiKey) {
+      console.error("GROQ_API_KEY is not configured.");
+
       return NextResponse.json(
-        { error: "Groq API key is missing. Check your environment variables." },
+        { error: "The itinerary service is temporarily unavailable." },
         { status: 500 }
       );
     }
 
-    const prompt = `
-Create a practical travel itinerary in JSON format.
+    const selectedCurrency = currency || "INR";
+    const selectedInterests = Array.isArray(interests) ? interests : [];
 
-Destination: ${destination}
-Duration: ${numberOfDays} days
-Budget: ${budget || "Not specified"}
-Travelers: ${travelers || "Not specified"}
-Trip purpose: ${purpose || "Leisure"}
-Interests: ${interests || "General sightseeing"}
+    const tripDetails = {
+      startingLocation: origin || "Not specified",
+      destination,
+      duration: `${numberOfDays} days`,
+      travelDate: travelDate || "Not specified",
+      travelers: numberOfTravelers,
+      travelParty: travelParty || "Not specified",
+      totalBudget: `${selectedCurrency} ${totalBudget}`,
+      purpose: purpose || "General sightseeing",
+      interests: selectedInterests,
+      preferences: preferences || "No additional preferences",
+    };
 
-Return only valid JSON in this exact structure:
+    const systemPrompt = `
+You are Bonvoya, an expert travel planner who creates practical,
+personalised, enjoyable travel itineraries.
+
+Your goal is to create a realistic trip plan based on the traveller's
+destination, dates, group type, budget, interests, and preferences.
+
+IMPORTANT RULES:
+
+1. Personalisation
+- Tailor recommendations to the traveller's selected purpose and interests.
+- Consider whether the traveller is solo, travelling as a couple,
+  with friends, or with family.
+- For families with children, prioritise suitable activities and a
+  manageable pace.
+- For couples, consider romantic experiences where appropriate.
+- For solo travellers, consider convenient transport and practical
+  safety advice.
+- For groups of friends, consider activities the group can enjoy together.
+- Respect any additional preferences supplied by the traveller.
+
+2. Dates and seasonality
+- Use the requested travel date when it is provided.
+- Consider typical seasonal weather and relevant seasonal conditions.
+- Do not invent live weather forecasts, current opening hours, ticket
+  availability, or confirmed reservations.
+- If the date is missing, make a general itinerary without claiming
+  date-specific information.
+
+3. Budget
+- The supplied budget is the TOTAL budget for the entire trip,
+  not a per-person or daily budget.
+- The currency code specifies the currency to use.
+- Do not convert the budget into another currency.
+- Allocate the budget across accommodation, food, transport,
+  activities, and miscellaneous expenses.
+- Keep recommendations realistic for the supplied budget.
+- Clearly label all monetary amounts with the selected currency.
+- Treat price estimates as approximate, not guaranteed current prices.
+- Do not claim that prices or reservations have been verified live.
+
+4. Practical itinerary
+- Create exactly the requested number of days.
+- Give each day a clear title and a sensible sequence of activities.
+- Group nearby attractions together to reduce unnecessary travel.
+- Include suggested times, activities, food suggestions, and transport
+  guidance where useful.
+- Avoid overloading each day with too many activities.
+- Do not invent specific businesses or claim that a venue exists if
+  you are unsure.
+- Mention when travellers should verify opening hours, prices, or
+  booking requirements.
+
+5. Missing information
+- If the origin, date, or preferences are missing, proceed using
+  reasonable assumptions where possible.
+- Do not block itinerary generation solely because optional information
+  is missing.
+- State important assumptions briefly in the response.
+
+6. Output
+Return ONLY valid JSON. Do not include Markdown fences or explanatory
+text outside the JSON object.
+
+Use this structure:
+
 {
-  "title": "A catchy trip title",
-  "introduction": "A short introduction to the trip",
-  "days": [
+  "tripTitle": "A suitable title for the trip",
+  "destination": "Destination",
+  "summary": "A short personalised trip overview",
+  "bestTimeToVisit": "Seasonal guidance relevant to the travel date",
+  "travelTips": [
+    "Practical tip"
+  ],
+  "budgetBreakdown": {
+    "accommodation": "Estimated total",
+    "food": "Estimated total",
+    "transport": "Estimated total",
+    "activities": "Estimated total",
+    "miscellaneous": "Estimated total",
+    "total": "Estimated total in the selected currency"
+  },
+  "itinerary": [
     {
       "day": 1,
-      "title": "Theme for the day",
+      "title": "Day title",
       "activities": [
         {
           "time": "9:00 AM",
-          "activity": "Activity name",
-          "details": "Useful details about the activity"
+          "activity": "Activity description",
+          "location": "Location or area",
+          "estimatedCost": "Approximate cost in the selected currency",
+          "tip": "Useful practical tip"
         }
       ]
     }
-  ],
-  "tips": ["Travel tip 1", "Travel tip 2"]
+  ]
 }
 
-Requirements:
-- Return exactly ${numberOfDays} days, numbered from 1 to ${numberOfDays}.
-- Include several useful activities per day.
-- Organize activities in a logical travel order.
-- Include local food and practical travel tips.
-- Respect the stated budget, traveler count, purpose, and interests.
-- Do not invent precise opening hours or prices.
-- Return JSON only, without Markdown fences.
+The itinerary array must contain exactly the requested number of days.
+The budget breakdown must use the selected currency and remain consistent
+with the total budget.
+`;
+
+    const userPrompt = `
+Create a personalised travel itinerary using these trip details:
+
+${JSON.stringify(tripDetails, null, 2)}
+
+Generate the complete itinerary and budget breakdown.
+
+Ensure the recommendations match the traveller's purpose, interests,
+group type, date, preferences, and total budget.
+
+Return valid JSON only.
 `;
 
     const response = await fetch(
@@ -87,99 +201,107 @@ Requirements:
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model,
+          model: process.env.GROQ_MODEL || "openai/gpt-oss-20b",
           messages: [
             {
               role: "system",
-              content:
-                "You are Bonvoya's travel itinerary planner. Return only valid JSON matching the exact requested schema. Do not include Markdown fences or explanatory text outside the JSON.",
+              content: systemPrompt,
             },
             {
               role: "user",
-              content: prompt,
+              content: userPrompt,
             },
           ],
-          temperature: 0.2,
-          max_tokens: 4000,
+          temperature: 0.7,
+          max_tokens: 7000,
+          response_format: {
+            type: "json_object",
+          },
         }),
-        signal: AbortSignal.timeout(45000),
       }
     );
 
-    const data = await response.json().catch(() => ({}));
-
     if (!response.ok) {
+      const errorDetails = await response.text();
+
       console.error(
-        "Groq itinerary API error:",
+        "Groq API error:",
         response.status,
-        data?.error?.message || "Unknown error"
+        errorDetails
       );
 
       return NextResponse.json(
         {
           error:
-            response.status === 429
-              ? "The AI service is temporarily rate-limited. Please try again shortly."
-              : "The AI could not generate your itinerary. Please try again.",
+            "We couldn't generate your itinerary right now. Please try again.",
         },
-        { status: response.status === 429 ? 429 : 502 }
-      );
-    }
-
-    const generatedText = data?.choices?.[0]?.message?.content;
-
-    if (typeof generatedText !== "string" || !generatedText.trim()) {
-      return NextResponse.json(
-        { error: "The AI returned an empty response. Please try again." },
         { status: 502 }
       );
     }
 
-    const cleanedText = generatedText
-      .trim()
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```$/, "");
+    const result = await response.json();
+
+    const content = result.choices?.[0]?.message?.content;
+
+    if (!content) {
+      console.error("Groq returned an empty itinerary response.");
+
+      return NextResponse.json(
+        { error: "The itinerary response was empty. Please try again." },
+        { status: 502 }
+      );
+    }
 
     let itinerary;
 
-    try {
-      itinerary = JSON.parse(cleanedText);
-    } catch {
-      console.error("Invalid itinerary JSON:", generatedText);
+try {
+  const cleanedContent = content
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/g, "")
+    .trim();
 
-      return NextResponse.json(
-        { error: "The AI returned an invalid itinerary. Please try again." },
-        { status: 502 }
-      );
-    }
+  itinerary = JSON.parse(cleanedContent);
+} catch (parseError) {
+  console.error("Failed to parse itinerary JSON:", parseError);
+  console.error("Groq response content:", content);
 
+  return NextResponse.json(
+    {
+      error:
+        "We couldn't process the generated itinerary. Please try again.",
+    },
+    { status: 502 }
+  );
+}
     if (
-      !itinerary.title ||
-      !itinerary.introduction ||
-      !Array.isArray(itinerary.days) ||
-      !Array.isArray(itinerary.tips) ||
-      itinerary.days.length !== numberOfDays
-    ) {
-      return NextResponse.json(
-        { error: "The AI returned an incomplete itinerary. Please try again." },
-        { status: 502 }
-      );
-    }
+  !itinerary ||
+  typeof itinerary !== "object" ||
+  !Array.isArray(itinerary.itinerary) ||
+  itinerary.itinerary.length !== numberOfDays
+) {
+  console.error(
+    "Invalid itinerary structure:",
+    JSON.stringify(itinerary, null, 2)
+  );
 
-    return NextResponse.json(itinerary);
+  return NextResponse.json(
+    {
+      error:
+        "The generated itinerary was incomplete or had an unexpected format. Please try again.",
+    },
+    { status: 502 }
+  );
+}
+
+return NextResponse.json(itinerary);
   } catch (error) {
     console.error("Itinerary generation error:", error);
 
-    const timedOut =
-      error instanceof Error && error.name === "TimeoutError";
-
     return NextResponse.json(
       {
-        error: timedOut
-          ? "Itinerary generation took too long. Please try again."
-          : "Something went wrong while creating your itinerary.",
+        error: "Something went wrong while generating your itinerary.",
       },
-      { status: timedOut ? 504 : 500 }
+      { status: 500 }
     );
   }
 }
